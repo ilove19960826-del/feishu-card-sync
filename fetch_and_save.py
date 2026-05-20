@@ -110,11 +110,12 @@ def _extract_image_key(content: dict) -> str | None:
     return None
 
 
-def download_image(token: str, image_key: str) -> bytes:
-    """通过 image_key 下载图片"""
-    url = f"{BASE_URL}/open-apis/im/v1/images/{image_key}"
+def download_image(token: str, image_key: str, message_id: str) -> bytes:
+    """通过 message resource 接口下载卡片中的图片"""
+    url = f"{BASE_URL}/open-apis/im/v1/messages/{message_id}/resources/{image_key}"
     headers = {"Authorization": f"Bearer {token}"}
-    resp = requests.get(url, headers=headers, timeout=30)
+    params = {"type": "image"}
+    resp = requests.get(url, headers=headers, params=params, timeout=30)
     resp.raise_for_status()
     log.info(f"图片下载成功: {len(resp.content)} bytes")
     return resp.content
@@ -178,8 +179,8 @@ def main():
         log.info("本次无新卡片图片，退出")
         sys.exit(0)
 
-    image_data = download_image(token, card["image_key"])
-
+    image_data = download_image(token, card["image_key"], card["message_id"])
+    
     ts_sec = int(card["create_time"]) // 1000 if len(card["create_time"]) > 10 else int(card["create_time"])
     dt = datetime.fromtimestamp(ts_sec, tz=timezone(timedelta(hours=8)))
     filename = f"{FILE_NAME_PREFIX}_{dt.strftime('%Y%m%d_%H%M%S')}.png"
