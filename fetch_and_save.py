@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-飞书卡片图片自动存档脚本 v3
-功能：从群聊获取最新一条含图飞书卡片，下载图片并写入 Bitable 附件字段。
+飞书卡片图片自动存档脚本 v5
+- 多卡回退：若最新卡片图片不可用（已删除/403），自动尝试下一张
+- 下载策略：resources + type=image
 """
 
 import os
@@ -32,7 +33,6 @@ log = logging.getLogger(__name__)
 def get_tenant_token() -> str:
     url = f"{BASE_URL}/open-apis/auth/v3/tenant_access_token/internal"
     resp = requests.post(url, json={"app_id": FEISHU_APP_ID, "app_secret": FEISHU_APP_SECRET}, timeout=10)
-    resp.raise_for_status()
     data = resp.json()
     if data.get("code") != 0:
         raise RuntimeError(f"获取 tenant_token 失败: {data}")
@@ -40,7 +40,8 @@ def get_tenant_token() -> str:
     return data["tenant_access_token"]
 
 
-def find_latest_image_card(token: str) -> dict | None:
+def list_candidate_cards(token: str) -> list[dict]:
+    """返回最近的候选卡片列表"""
     url = f"{BASE_URL}/open-apis/im/v1/messages"
     headers = {"Authorization": f"Bearer {token}"}
     params = {
@@ -50,7 +51,6 @@ def find_latest_image_card(token: str) -> dict | None:
         "page_size": 10,
     }
     resp = requests.get(url, headers=headers, params=params, timeout=15)
-    resp.raise_for_status()
     data = resp.json()
     if data.get("code") != 0:
         raise RuntimeError(f"拉取消息失败: {data}")
@@ -58,6 +58,7 @@ def find_latest_image_card(token: str) -> dict | None:
     items = data.get("data", {}).get("items", [])
     log.info(f"拉取到 {len(items)} 条消息")
 
+    candidates = []
     for item in items:
         if item.get("msg_type") != "interactive":
             continue
@@ -72,16 +73,13 @@ def find_latest_image_card(token: str) -> dict | None:
         image_key = _extract_image_key(content)
         if not image_key:
             continue
-        log.info(f"✅ 找到目标卡片: title={title}, image_key={image_key}, message_id={item['message_id']}")
-        return {
+        candidates.append({
             "image_key": image_key,
             "message_id": item["message_id"],
             "title": title,
             "create_time": item.get("create_time", "0"),
-        }
-
-    log.warning("⚠️ 未找到符合条件的含图卡片")
-    return None
+        })
+    return candidates
 
 
 def _extract_image_key(content: dict) -> str | None:
@@ -97,42 +95,28 @@ def _extract_image_key(content: dict) -> str | None:
 
 
 def download_image(token: str, image_key: str, message_id: str) -> bytes:
-    """尝试多种方式下载卡片中的图片"""
+    """通过 resources + type=image 下载图片"""
+    url = f"{BASE_URL}/open-apis/im/v1/messages/{message_id}/resources/{image_key}"
     headers = {"Authorization": f"Bearer {token}"}
+    resp = requests.get(url, headers=headers, params={"type": "image"}, timeout=30)
+    ct = resp.headers.get("Content-Type", "")
 
-    # 方法 1: message resource 接口
-    url1 = f"{BASE_URL}/open-apis/im/v1/messages/{message_id}/resources/{image_key}"
-    resp1 = requests.get(url1, headers=headers, params={"type": "image"}, timeout=30)
-    if resp1.status_code == 200 and len(resp1.content) > 100:
-        log.info(f"✅ 方法1( resources + type=image )成功: {len(resp1.content)} bytes")
-        return resp1.content
-    log.warning(f"方法1失败: HTTP {resp1.status_code}, body={resp1.text[:300]}")
+    if resp.status_code == 200 and ("image" in ct or len(resp.content) > 10000):
+        log.info(f"✅ 图片下载成功: {len(resp.content)} bytes")
+        return resp.content
 
-    # 方法 2: message resource 接口（不同 type）
-    resp2 = requests.get(url1, headers=headers, params={"type": "message_resource"}, timeout=30)
-    if resp2.status_code == 200 and len(resp2.content) > 100:
-        log.info(f"✅ 方法2( resources + type=message_resource )成功: {len(resp2.content)} bytes")
-        return resp2.content
-    log.warning(f"方法2失败: HTTP {resp2.status_code}, body={resp2.text[:300]}")
-
-    # 方法 3: 标准图片接口
-    url3 = f"{BASE_URL}/open-apis/im/v1/images/{image_key}"
-    resp3 = requests.get(url3, headers=headers, timeout=30)
-    if resp3.status_code == 200 and len(resp3.content) > 100:
-        log.info(f"✅ 方法3( /im/v1/images )成功: {len(resp3.content)} bytes")
-        return resp3.content
-    log.warning(f"方法3失败: HTTP {resp3.status_code}, body={resp3.text[:300]}")
-
-    # 方法 4: message resource 不传 type
-    resp4 = requests.get(url1, headers=headers, timeout=30)
-    if resp4.status_code == 200 and len(resp4.content) > 100:
-        log.info(f"✅ 方法4( resources + 无type )成功: {len(resp4.content)} bytes")
-        return resp4.content
-    log.warning(f"方法4失败: HTTP {resp4.status_code}, body={resp4.text[:300]}")
-
-    raise RuntimeError(
-        f"所有下载方式均失败！image_key={image_key}, message_id={message_id}"
-    )
+    try:
+        err = resp.json()
+        code = err.get("code")
+        msg = err.get("msg", "")
+        if code == 14005:
+            raise RuntimeError(f"图片已被删除 (code=14005)")
+        elif code == 234008:
+            raise RuntimeError(f"应用不是消息发送者 (code=234008)")
+        else:
+            raise RuntimeError(f"下载失败: code={code}, msg={msg}")
+    except json.JSONDecodeError:
+        raise RuntimeError(f"下载失败: HTTP {resp.status_code}")
 
 
 def upload_to_drive(token: str, image_data: bytes, filename: str) -> str:
@@ -146,11 +130,10 @@ def upload_to_drive(token: str, image_data: bytes, filename: str) -> str:
     }
     files = {"file": (filename, image_data, "image/png")}
     resp = requests.post(url, headers=headers, data=form_data, files=files, timeout=60)
-    resp.raise_for_status()
     data = resp.json()
     if data.get("code") != 0:
-        raise RuntimeError(f"上传到云盘失败: {data}")
-    log.info(f"✅ 图片上传成功: file_token={data['data']['file_token']}")
+        raise RuntimeError(f"上传云盘失败: {data}")
+    log.info(f"✅ 上传成功: file_token={data['data']['file_token']}")
     return data["data"]["file_token"]
 
 
@@ -165,35 +148,47 @@ def create_bitable_record(token: str, file_token: str, card_title: str, create_t
         report_type = "月报"
     fields = {"日期": ts_ms, "报告类型": report_type, ATTACHMENT_FIELD: [{"file_token": file_token}]}
     resp = requests.post(url, headers=headers, json={"fields": fields}, timeout=15)
-    resp.raise_for_status()
     data = resp.json()
     if data.get("code") != 0:
-        raise RuntimeError(f"创建 Bitable 记录失败: {data}")
-    record_id = data["data"]["record"]["record_id"]
-    log.info(f"✅ Bitable 记录创建成功: record_id={record_id}")
-    return record_id
+        raise RuntimeError(f"创建记录失败: {data}")
+    rid = data["data"]["record"]["record_id"]
+    log.info(f"✅ 记录创建成功: record_id={rid}")
+    return rid
 
 
 def main():
     log.info("=" * 50)
-    log.info("飞书卡片图片自动存档 v3 开始运行")
+    log.info("飞书卡片图片自动存档 v5")
+    log.info(f"  APP_ID={FEISHU_APP_ID}")
+    log.info(f"  CHAT_ID={CHAT_ID}")
     log.info("=" * 50)
 
     token = get_tenant_token()
-    card = find_latest_image_card(token)
-    if not card:
-        log.info("本次无新卡片图片，退出")
+
+    candidates = list_candidate_cards(token)
+    if not candidates:
+        log.info("⚠️ 未找到含图卡片，退出")
         sys.exit(0)
 
-    image_data = download_image(token, card["image_key"], card["message_id"])
+    log.info(f"候选卡片 {len(candidates)} 张，逐张尝试...")
 
-    ts_sec = int(card["create_time"]) // 1000 if len(card["create_time"]) > 10 else int(card["create_time"])
-    dt = datetime.fromtimestamp(ts_sec, tz=timezone(timedelta(hours=8)))
-    filename = f"{FILE_NAME_PREFIX}_{dt.strftime('%Y%m%d_%H%M%S')}.png"
+    for idx, card in enumerate(candidates, 1):
+        log.info(f"--- 第 {idx} 张: {card['title']}, img={card['image_key'][:30]}... ---")
+        try:
+            image_data = download_image(token, card["image_key"], card["message_id"])
+            ts_sec = int(card["create_time"]) // 1000 if len(card["create_time"]) > 10 else int(card["create_time"])
+            dt = datetime.fromtimestamp(ts_sec, tz=timezone(timedelta(hours=8)))
+            filename = f"{FILE_NAME_PREFIX}_{dt.strftime('%Y%m%d_%H%M%S')}.png"
+            file_token = upload_to_drive(token, image_data, filename)
+            record_id = create_bitable_record(token, file_token, card["title"], card["create_time"])
+            log.info(f"🎉 完成！record_id={record_id}, file={filename}")
+            return
+        except Exception as e:
+            log.warning(f"  ❌ 失败: {e}，尝试下一张...")
+            continue
 
-    file_token = upload_to_drive(token, image_data, filename)
-    record_id = create_bitable_record(token, file_token, card["title"], card["create_time"])
-    log.info(f"🎉 全部完成！record_id={record_id}, file={filename}")
+    log.error("❌ 所有候选卡片均失败，请检查工作流是否正常发出含图卡片")
+    sys.exit(1)
 
 
 if __name__ == "__main__":
