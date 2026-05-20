@@ -191,4 +191,18 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # ========== 调试模式：逐个检查配置是否正确 ==========
+    import traceback
+    try:
+        main()
+    except Exception as e:
+        log.error(f"❌ 运行失败: {e}")
+        log.error(traceback.format_exc())
+        # 输出环境变量是否正确（隐藏 secret）
+        log.error("--- 环境变量检查 ---")
+        log.error(f"FEISHU_APP_ID = {'已设置' if os.environ.get('FEISHU_APP_ID') else '❌ 未设置'}")
+        log.error(f"FEISHU_APP_SECRET = {'已设置' if os.environ.get('FEISHU_APP_SECRET') else '❌ 未设置'}")
+        log.error(f"CHAT_ID = {os.environ.get('CHAT_ID', '❌ 未设置')}")
+        log.error(f"BITABLE_APP_TOKEN = {os.environ.get('BITABLE_APP_TOKEN', '❌ 未设置')}")
+        log.error(f"BITABLE_TABLE_ID = {os.environ.get('BITABLE_TABLE_ID', '❌ 未设置')}")
+        sys.exit(1)
