@@ -8,6 +8,7 @@
 import os
 import sys
 import json
+import traceback
 import logging
 from datetime import datetime, timezone, timedelta
 
@@ -22,13 +23,8 @@ CHAT_ID = os.environ["CHAT_ID"]
 BITABLE_APP_TOKEN = os.environ["BITABLE_APP_TOKEN"]
 BITABLE_TABLE_ID = os.environ["BITABLE_TABLE_ID"]
 
-# 可选：卡片标题关键词（为空则匹配所有含图卡片）
 CARD_TITLE_KEYWORD = os.environ.get("CARD_TITLE_KEYWORD", "销交服试驾安全日报")
-
-# 目标附件字段名
 ATTACHMENT_FIELD = os.environ.get("ATTACHMENT_FIELD", "报告")
-
-# 文件名前缀
 FILE_NAME_PREFIX = os.environ.get("FILE_NAME_PREFIX", "试驾安全日报")
 
 BASE_URL = "https://open.feishu.cn"
@@ -116,7 +112,9 @@ def download_image(token: str, image_key: str, message_id: str) -> bytes:
     headers = {"Authorization": f"Bearer {token}"}
     params = {"type": "image"}
     resp = requests.get(url, headers=headers, params=params, timeout=30)
-    resp.raise_for_status()
+    if resp.status_code != 200:
+        log.error(f"下载图片失败: HTTP {resp.status_code}, body={resp.text[:500]}")
+        resp.raise_for_status()
     log.info(f"图片下载成功: {len(resp.content)} bytes")
     return resp.content
 
@@ -180,7 +178,7 @@ def main():
         sys.exit(0)
 
     image_data = download_image(token, card["image_key"], card["message_id"])
-    
+
     ts_sec = int(card["create_time"]) // 1000 if len(card["create_time"]) > 10 else int(card["create_time"])
     dt = datetime.fromtimestamp(ts_sec, tz=timezone(timedelta(hours=8)))
     filename = f"{FILE_NAME_PREFIX}_{dt.strftime('%Y%m%d_%H%M%S')}.png"
@@ -192,18 +190,9 @@ def main():
 
 
 if __name__ == "__main__":
-    # ========== 调试模式：逐个检查配置是否正确 ==========
-    import traceback
     try:
         main()
     except Exception as e:
         log.error(f"❌ 运行失败: {e}")
         log.error(traceback.format_exc())
-        # 输出环境变量是否正确（隐藏 secret）
-        log.error("--- 环境变量检查 ---")
-        log.error(f"FEISHU_APP_ID = {'已设置' if os.environ.get('FEISHU_APP_ID') else '❌ 未设置'}")
-        log.error(f"FEISHU_APP_SECRET = {'已设置' if os.environ.get('FEISHU_APP_SECRET') else '❌ 未设置'}")
-        log.error(f"CHAT_ID = {os.environ.get('CHAT_ID', '❌ 未设置')}")
-        log.error(f"BITABLE_APP_TOKEN = {os.environ.get('BITABLE_APP_TOKEN', '❌ 未设置')}")
-        log.error(f"BITABLE_TABLE_ID = {os.environ.get('BITABLE_TABLE_ID', '❌ 未设置')}")
         sys.exit(1)
