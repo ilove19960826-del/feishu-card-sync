@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
-飞书卡片图片自动存档脚本
+飞书卡片图片自动存档脚本 v3
 功能：从群聊获取最新一条含图飞书卡片，下载图片并写入 Bitable 附件字段。
-场景：GitHub Actions 定时运行（每天 1~2 次），无需常驻。
 """
 
 import os
@@ -14,9 +13,6 @@ from datetime import datetime, timezone, timedelta
 
 import requests
 
-# ============================================================
-# 配置（全部从环境变量读取，不硬编码）
-# ============================================================
 FEISHU_APP_ID = os.environ["FEISHU_APP_ID"]
 FEISHU_APP_SECRET = os.environ["FEISHU_APP_SECRET"]
 CHAT_ID = os.environ["CHAT_ID"]
@@ -34,12 +30,8 @@ log = logging.getLogger(__name__)
 
 
 def get_tenant_token() -> str:
-    """获取应用身份 token"""
     url = f"{BASE_URL}/open-apis/auth/v3/tenant_access_token/internal"
-    resp = requests.post(url, json={
-        "app_id": FEISHU_APP_ID,
-        "app_secret": FEISHU_APP_SECRET,
-    }, timeout=10)
+    resp = requests.post(url, json={"app_id": FEISHU_APP_ID, "app_secret": FEISHU_APP_SECRET}, timeout=10)
     resp.raise_for_status()
     data = resp.json()
     if data.get("code") != 0:
@@ -49,7 +41,6 @@ def get_tenant_token() -> str:
 
 
 def find_latest_image_card(token: str) -> dict | None:
-    """按时间倒序拉取最近消息，找标题匹配+含图的最新卡片"""
     url = f"{BASE_URL}/open-apis/im/v1/messages"
     headers = {"Authorization": f"Bearer {token}"}
     params = {
@@ -81,7 +72,7 @@ def find_latest_image_card(token: str) -> dict | None:
         image_key = _extract_image_key(content)
         if not image_key:
             continue
-        log.info(f"✅ 找到目标卡片: title={title}, image_key={image_key}")
+        log.info(f"✅ 找到目标卡片: title={title}, image_key={image_key}, message_id={item['message_id']}")
         return {
             "image_key": image_key,
             "message_id": item["message_id"],
@@ -94,7 +85,6 @@ def find_latest_image_card(token: str) -> dict | None:
 
 
 def _extract_image_key(content: dict) -> str | None:
-    """从卡片 JSON 中提取第一个 image_key"""
     for row in content.get("elements", []):
         if not isinstance(row, list):
             row = [row]
@@ -107,20 +97,45 @@ def _extract_image_key(content: dict) -> str | None:
 
 
 def download_image(token: str, image_key: str, message_id: str) -> bytes:
-    """通过 message resource 接口下载卡片中的图片"""
-    url = f"{BASE_URL}/open-apis/im/v1/messages/{message_id}/resources/{image_key}"
+    """尝试多种方式下载卡片中的图片"""
     headers = {"Authorization": f"Bearer {token}"}
-    params = {"type": "image"}
-    resp = requests.get(url, headers=headers, params=params, timeout=30)
-    if resp.status_code != 200:
-        log.error(f"下载图片失败: HTTP {resp.status_code}, body={resp.text[:500]}")
-        resp.raise_for_status()
-    log.info(f"图片下载成功: {len(resp.content)} bytes")
-    return resp.content
+
+    # 方法 1: message resource 接口
+    url1 = f"{BASE_URL}/open-apis/im/v1/messages/{message_id}/resources/{image_key}"
+    resp1 = requests.get(url1, headers=headers, params={"type": "image"}, timeout=30)
+    if resp1.status_code == 200 and len(resp1.content) > 100:
+        log.info(f"✅ 方法1( resources + type=image )成功: {len(resp1.content)} bytes")
+        return resp1.content
+    log.warning(f"方法1失败: HTTP {resp1.status_code}, body={resp1.text[:300]}")
+
+    # 方法 2: message resource 接口（不同 type）
+    resp2 = requests.get(url1, headers=headers, params={"type": "message_resource"}, timeout=30)
+    if resp2.status_code == 200 and len(resp2.content) > 100:
+        log.info(f"✅ 方法2( resources + type=message_resource )成功: {len(resp2.content)} bytes")
+        return resp2.content
+    log.warning(f"方法2失败: HTTP {resp2.status_code}, body={resp2.text[:300]}")
+
+    # 方法 3: 标准图片接口
+    url3 = f"{BASE_URL}/open-apis/im/v1/images/{image_key}"
+    resp3 = requests.get(url3, headers=headers, timeout=30)
+    if resp3.status_code == 200 and len(resp3.content) > 100:
+        log.info(f"✅ 方法3( /im/v1/images )成功: {len(resp3.content)} bytes")
+        return resp3.content
+    log.warning(f"方法3失败: HTTP {resp3.status_code}, body={resp3.text[:300]}")
+
+    # 方法 4: message resource 不传 type
+    resp4 = requests.get(url1, headers=headers, timeout=30)
+    if resp4.status_code == 200 and len(resp4.content) > 100:
+        log.info(f"✅ 方法4( resources + 无type )成功: {len(resp4.content)} bytes")
+        return resp4.content
+    log.warning(f"方法4失败: HTTP {resp4.status_code}, body={resp4.text[:300]}")
+
+    raise RuntimeError(
+        f"所有下载方式均失败！image_key={image_key}, message_id={message_id}"
+    )
 
 
 def upload_to_drive(token: str, image_data: bytes, filename: str) -> str:
-    """上传图片到飞书云盘，返回 file_token"""
     url = f"{BASE_URL}/open-apis/drive/v1/medias/upload_all"
     headers = {"Authorization": f"Bearer {token}"}
     form_data = {
@@ -135,13 +150,11 @@ def upload_to_drive(token: str, image_data: bytes, filename: str) -> str:
     data = resp.json()
     if data.get("code") != 0:
         raise RuntimeError(f"上传到云盘失败: {data}")
-    file_token = data["data"]["file_token"]
-    log.info(f"✅ 图片上传成功: file_token={file_token}")
-    return file_token
+    log.info(f"✅ 图片上传成功: file_token={data['data']['file_token']}")
+    return data["data"]["file_token"]
 
 
 def create_bitable_record(token: str, file_token: str, card_title: str, create_time_ms: str) -> str:
-    """在目标表新建一条记录"""
     url = f"{BASE_URL}/open-apis/bitable/v1/apps/{BITABLE_APP_TOKEN}/tables/{BITABLE_TABLE_ID}/records"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     ts_ms = int(create_time_ms) if len(create_time_ms) > 10 else int(create_time_ms) * 1000
@@ -150,11 +163,7 @@ def create_bitable_record(token: str, file_token: str, card_title: str, create_t
         report_type = "周报"
     elif "月报" in card_title:
         report_type = "月报"
-    fields = {
-        "日期": ts_ms,
-        "报告类型": report_type,
-        ATTACHMENT_FIELD: [{"file_token": file_token}],
-    }
+    fields = {"日期": ts_ms, "报告类型": report_type, ATTACHMENT_FIELD: [{"file_token": file_token}]}
     resp = requests.post(url, headers=headers, json={"fields": fields}, timeout=15)
     resp.raise_for_status()
     data = resp.json()
@@ -167,8 +176,7 @@ def create_bitable_record(token: str, file_token: str, card_title: str, create_t
 
 def main():
     log.info("=" * 50)
-    log.info("飞书卡片图片自动存档 开始运行")
-    log.info(f"  chat_id={CHAT_ID}  app_token={BITABLE_APP_TOKEN}  table_id={BITABLE_TABLE_ID}")
+    log.info("飞书卡片图片自动存档 v3 开始运行")
     log.info("=" * 50)
 
     token = get_tenant_token()
@@ -185,7 +193,6 @@ def main():
 
     file_token = upload_to_drive(token, image_data, filename)
     record_id = create_bitable_record(token, file_token, card["title"], card["create_time"])
-
     log.info(f"🎉 全部完成！record_id={record_id}, file={filename}")
 
 
