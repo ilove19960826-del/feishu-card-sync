@@ -1,10 +1,13 @@
 name: Feishu Card Image Sync
+
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 on:
   schedule:
     - cron: '0 15 * * *'
   workflow_dispatch:
+
 jobs:
   sync:
     runs-on: ubuntu-latest
@@ -14,18 +17,15 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install
-        run: |
-          pip install requests playwright
-          playwright install chromium
-          playwright install-deps chromium          
+        run: pip install requests
       - name: Run
         env:
           FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
           FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
           BITABLE_APP_TOKEN: ${{ secrets.BITABLE_APP_TOKEN }}
           BITABLE_TABLE_ID: ${{ secrets.BITABLE_TABLE_ID }}
-          FEISHU_COOKIE: ${{ secrets.FEISHU_COOKIE }}
-          DASHBOARD_URL: 'https://mi.feishu.cn/share/base/dashboard/shrcnfII9800SafQCLkKZmHMmUf'
+          CARD_TITLE_KEYWORD: '销交服试驾安全日报'
           ATTACHMENT_FIELD: '报告'
           FILE_NAME_PREFIX: '试驾安全日报'
         run: python fetch_and_save.py
