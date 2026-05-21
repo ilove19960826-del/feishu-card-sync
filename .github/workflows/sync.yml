@@ -5,8 +5,7 @@ env:
 
 on:
   schedule:
-    - cron: '30 0 * * *'
-    - cron: '30 10 * * *'
+    - cron: '0 15 * * *'
   workflow_dispatch:
 
 jobs:
@@ -22,16 +21,17 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install requests
+        run: |
+          pip install requests playwright
+          playwright install chromium --with-deps          
 
       - name: Run sync script
         env:
           FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
           FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
-          CHAT_ID: ${{ secrets.CHAT_ID }}
           BITABLE_APP_TOKEN: ${{ secrets.BITABLE_APP_TOKEN }}
           BITABLE_TABLE_ID: ${{ secrets.BITABLE_TABLE_ID }}
-          CARD_TITLE_KEYWORD: '销交服试驾安全日报'
+          DASHBOARD_URL: 'https://mi.feishu.cn/share/base/dashboard/shrcnfII9800SafQCLkKZmHMmUf'
           ATTACHMENT_FIELD: '报告'
           FILE_NAME_PREFIX: '试驾安全日报'
         run: python fetch_and_save.py
