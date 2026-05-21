@@ -57,10 +57,30 @@ def screenshot(url):
             try: pg.wait_for_selector(s, timeout=10000); log.info(f"Found {s}"); break
             except: continue
         pg.wait_for_timeout(8000)
-        pg.evaluate("window.scrollTo(0,document.body.scrollHeight)")
+
+        # 强制展开所有内部滚动容器，让完整内容可见
+        pg.evaluate("""
+            () => {
+                document.querySelectorAll('*').forEach(el => {
+                    const style = window.getComputedStyle(el);
+                    if (style.overflow === 'auto' || style.overflow === 'scroll' ||
+                        style.overflowY === 'auto' || style.overflowY === 'scroll') {
+                        el.style.overflow = 'visible';
+                        el.style.overflowY = 'visible';
+                        el.style.height = 'auto';
+                        el.style.maxHeight = 'none';
+                    }
+                });
+            }
+        """)
+        pg.wait_for_timeout(3000)
+
+        # 再触发懒加载
+        pg.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         pg.wait_for_timeout(2000)
-        pg.evaluate("window.scrollTo(0,0)")
+        pg.evaluate("window.scrollTo(0, 0)")
         pg.wait_for_timeout(1000)
+
         shot = pg.screenshot(full_page=True, type="png")
         log.info(f"OK screenshot {len(shot)} bytes")
         b.close()
