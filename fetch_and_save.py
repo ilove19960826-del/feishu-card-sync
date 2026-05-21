@@ -39,7 +39,7 @@ def screenshot(url):
     log.info(f"Opening {url}")
     with sync_playwright() as p:
         b = p.chromium.launch(headless=True, args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu"])
-        ctx = b.new_context(viewport={"width":1920,"height":1080}, locale="zh-CN")
+        ctx = b.new_context(viewport={"width":1920,"height":8000}, locale="zh-CN")
         cs = parse_cookies(FEISHU_COOKIE, ".feishu.cn") + parse_cookies(FEISHU_COOKIE, ".mi.feishu.cn")
         ctx.add_cookies(cs)
         log.info("OK cookies injected")
