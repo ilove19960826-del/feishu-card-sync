@@ -53,24 +53,70 @@ def screenshot_dashboard(url: str) -> bytes:
     """用 Playwright 无头浏览器截图仪表盘"""
     log.info(f"打开仪表盘: {url}")
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
-        page = browser.new_page(viewport={"width": 1920, "height": 1080})
+        browser = p.chromium.launch(headless=True, args=[
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+        ])
+        context = browser.new_context(
+            viewport={"width": 1920, "height": 1080},
+            locale="zh-CN",
+        )
+        page = context.new_page()
 
-        page.goto(url, wait_until="networkidle", timeout=60000)
+        # 访问仪表盘
+        page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        log.info("页面已加载，等待内容渲染...")
 
-        # 等待仪表盘内容加载完成
-        page.wait_for_timeout(5000)
+        # 处理可能出现的弹窗/遮罩
+        for _ in range(3):
+            try:
+                # 关闭登录弹窗
+                close_btns = page.locator('[class*="close"], [class*="Close"], [aria-label="关闭"]')
+                if close_btns.count() > 0:
+                    close_btns.first.click(timeout=2000)
+                    log.info("关闭了弹窗")
+            except Exception:
+                pass
+            try:
+                # 关闭 Cookie 提示
+                cookie_btns = page.locator('button:has-text("我知道了"), button:has-text("关闭"), button:has-text("确定")')
+                if cookie_btns.count() > 0:
+                    cookie_btns.first.click(timeout=2000)
+                    log.info("关闭了提示")
+            except Exception:
+                pass
+            page.wait_for_timeout(1000)
 
-        # 尝试等待仪表盘图表渲染
-        try:
-            page.wait_for_selector("canvas, svg, img", timeout=15000)
-            page.wait_for_timeout(3000)
-        except Exception:
-            log.warning("未检测到图表元素，使用当前页面截图")
-            page.wait_for_timeout(2000)
+        # 等待仪表盘核心内容渲染
+        # 仪表盘通常有 canvas(SVG图表) 或 img 元素
+        log.info("等待图表渲染...")
+        rendered = False
+        for selector in ["canvas", "svg", "img", "[class*='chart']", "[class*='dashboard']", "[class*='Chart']"]:
+            try:
+                page.wait_for_selector(selector, timeout=10000)
+                log.info(f"检测到元素: {selector}")
+                rendered = True
+                break
+            except Exception:
+                continue
 
+        if not rendered:
+            log.warning("未检测到图表元素，等待固定时间后截图")
+
+        # 额外等待确保所有异步图表数据加载完成
+        page.wait_for_timeout(8000)
+
+        # 再尝试滚动一次确保懒加载的内容也显示
+        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        page.wait_for_timeout(2000)
+        page.evaluate("window.scrollTo(0, 0)")
+        page.wait_for_timeout(1000)
+
+        # 截图
         screenshot = page.screenshot(full_page=True, type="png")
         log.info(f"✅ 截图成功: {len(screenshot)} bytes")
+
         browser.close()
 
     return screenshot

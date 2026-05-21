@@ -23,7 +23,8 @@ jobs:
       - name: Install dependencies
         run: |
           pip install requests playwright
-          playwright install chromium --with-deps          
+          playwright install chromium
+          playwright install-deps chromium         
 
       - name: Run sync script
         env:
